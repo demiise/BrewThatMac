@@ -18,12 +18,6 @@ Commands:
 - `drift`: compare installed state vs Brewfile and apply fixes
 - `help`: show usage
 
-Direct scripts are also available:
-
-- `./brewup.sh`
-- `./brewdump.sh`
-- `./brewdrift.sh`
-
 ## Setup
 
 1. Copy config template:
@@ -62,9 +56,9 @@ First-run behavior:
 
 ```zsh
 alias brewthatmac='/path/to/BrewThatMac/brewthatmac.sh'
-alias brewup='/path/to/BrewThatMac/brewup.sh'
-alias brewdump='/path/to/BrewThatMac/brewdump.sh'
-alias brewdrift='/path/to/BrewThatMac/brewdrift.sh'
+alias brewup='brewthatmac up'
+alias brewdump='brewthatmac dump'
+alias brewdrift='brewthatmac drift'
 ```
 
 ## Notes

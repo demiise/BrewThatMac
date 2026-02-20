@@ -7,12 +7,12 @@ Brew-first macOS package workflow with a single source of truth `Brewfile`.
 Primary dispatcher:
 
 ```bash
-./scripts/brewthatmac.sh <command>
+./brewthatmac.sh <command>
 ```
 
 Commands:
 
-- `config`: interactive setup for `scripts/.env`
+- `config`: interactive setup for `.env`
 - `up`: `brew update/upgrade` + `mas upgrade` + cleanup + doctor
 - `dump`: dump installed state to Brewfile + version snapshots
 - `drift`: compare installed state vs Brewfile and apply fixes
@@ -20,19 +20,19 @@ Commands:
 
 Direct scripts are also available:
 
-- `./scripts/brewup.sh`
-- `./scripts/brewdump.sh`
-- `./scripts/brewdrift.sh`
+- `./brewup.sh`
+- `./brewdump.sh`
+- `./brewdrift.sh`
 
 ## Setup
 
 1. Copy config template:
 
 ```bash
-cp ./scripts/.env.example ./scripts/.env
+cp ./.env.example ./.env
 ```
 
-2. Edit `./scripts/.env`:
+2. Edit `./.env`:
 
 - `MACOS_BACKUP_ROOT`
 - `MACOS_BREWFILE_PATH`
@@ -43,13 +43,13 @@ cp ./scripts/.env.example ./scripts/.env
 Alternative:
 
 ```bash
-./scripts/brewthatmac.sh config
+./brewthatmac.sh config
 ```
 
-This interactive setup writes `scripts/.env`.
+This interactive setup writes `.env`.
 
 First-run behavior:
-- Running `brewthatmac up|dump|drift` without `scripts/.env` will automatically launch interactive config.
+- Running `brewthatmac up|dump|drift` without `.env` will automatically launch interactive config.
 
 ## Recommended Workflow
 
@@ -61,10 +61,10 @@ First-run behavior:
 ## Optional Aliases
 
 ```zsh
-alias brewthatmac='/path/to/BrewThatMac/scripts/brewthatmac.sh'
-alias brewup='/path/to/BrewThatMac/scripts/brewup.sh'
-alias brewdump='/path/to/BrewThatMac/scripts/brewdump.sh'
-alias brewdrift='/path/to/BrewThatMac/scripts/brewdrift.sh'
+alias brewthatmac='/path/to/BrewThatMac/brewthatmac.sh'
+alias brewup='/path/to/BrewThatMac/brewup.sh'
+alias brewdump='/path/to/BrewThatMac/brewdump.sh'
+alias brewdrift='/path/to/BrewThatMac/brewdrift.sh'
 ```
 
 ## Notes

@@ -10,7 +10,7 @@ usage() {
 Usage: $(basename "$0") <command>
 
 Commands:
-  config  Interactive setup for scripts/.env
+  config  Interactive setup for .env
   up      Run brew update/upgrade + cleanup + doctor
   dump    Dump installed state to Brewfile + version snapshot
   drift   Audit drift between installed state and Brewfile

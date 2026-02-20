@@ -13,7 +13,7 @@ Primary dispatcher:
 Commands:
 
 - `config`: interactive setup for `.env`
-- `up`: `brew update/upgrade` + `mas upgrade` + cleanup + doctor
+- `up`: `brew update/upgrade` + `mas upgrade` + cleanup + doctor + end-of-run upgrade summary
 - `dump`: dump installed state to Brewfile + version snapshots
 - `drift`: compare installed state vs Brewfile and apply fixes
 - `help`: show usage

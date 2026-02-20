@@ -48,6 +48,110 @@ require_cmd() {
   }
 }
 
+snapshot_brew_versions() {
+  local type="$1"
+  local map_name="$2"
+  local line item_name item_version
+  local -a lines
+
+  eval "${map_name}=()"
+  lines=( "${(@f)$(brew list "--${type}" --versions 2>/dev/null)}" )
+  for line in "${lines[@]}"; do
+    [[ -n "${line}" ]] || continue
+    item_name="${line%% *}"
+    if [[ "${line}" == *" "* ]]; then
+      item_version="${line#* }"
+    else
+      item_version=""
+    fi
+    eval "${map_name}[${(q)item_name}]=${(q)item_version}"
+  done
+}
+
+snapshot_mas_versions() {
+  local version_map_name="$1"
+  local name_map_name="$2"
+  local line app_id app_name app_version
+  local -a lines
+
+  eval "${version_map_name}=()"
+  eval "${name_map_name}=()"
+  command -v mas >/dev/null 2>&1 || return 0
+
+  lines=( "${(@f)$(mas list 2>/dev/null)}" )
+  for line in "${lines[@]}"; do
+    if [[ "${line}" =~ '^([0-9]+)[[:space:]]+(.+)[[:space:]]+\(([^()]*)\)$' ]]; then
+      app_id="${match[1]}"
+      app_name="${match[2]}"
+      app_version="${match[3]}"
+      eval "${version_map_name}[${(q)app_id}]=${(q)app_version}"
+      eval "${name_map_name}[${(q)app_id}]=${(q)app_name}"
+    fi
+  done
+}
+
+print_upgrade_summary() {
+  local formula_before_name="$1"
+  local formula_after_name="$2"
+  local cask_before_name="$3"
+  local cask_after_name="$4"
+  local mas_versions_before_name="$5"
+  local mas_versions_after_name="$6"
+  local mas_names_after_name="$7"
+  local name before_version after_version app_id app_name
+  local -a upgraded_formulae upgraded_casks upgraded_apps
+  local -a sorted_formulae sorted_casks sorted_apps
+
+  eval "
+    for name in \${(@k)${formula_before_name}}; do
+      before_version=\${${formula_before_name}[\$name]}
+      after_version=\${${formula_after_name}[\$name]-}
+      if [[ -n \"\${after_version}\" && \"\${before_version}\" != \"\${after_version}\" ]]; then
+        upgraded_formulae+=( \"\${name} \${before_version} -> \${after_version}\" )
+      fi
+    done
+  "
+
+  eval "
+    for name in \${(@k)${cask_before_name}}; do
+      before_version=\${${cask_before_name}[\$name]}
+      after_version=\${${cask_after_name}[\$name]-}
+      if [[ -n \"\${after_version}\" && \"\${before_version}\" != \"\${after_version}\" ]]; then
+        upgraded_casks+=( \"\${name} \${before_version} -> \${after_version}\" )
+      fi
+    done
+  "
+
+  eval "
+    for app_id in \${(@k)${mas_versions_before_name}}; do
+      before_version=\${${mas_versions_before_name}[\$app_id]}
+      after_version=\${${mas_versions_after_name}[\$app_id]-}
+      if [[ -n \"\${after_version}\" && \"\${before_version}\" != \"\${after_version}\" ]]; then
+        app_name=\${${mas_names_after_name}[\$app_id]-App \${app_id}}
+        upgraded_apps+=( \"\${app_name} (\${app_id}) \${before_version} -> \${after_version}\" )
+      fi
+    done
+  "
+
+  sorted_formulae=( "${(@on)upgraded_formulae}" )
+  sorted_casks=( "${(@on)upgraded_casks}" )
+  sorted_apps=( "${(@on)upgraded_apps}" )
+
+  step "Upgrade summary"
+  printf "  Homebrew formulae upgraded: %d\n" "${#sorted_formulae[@]}"
+  for name in "${sorted_formulae[@]}"; do
+    printf "    - %s\n" "${name}"
+  done
+  printf "  Homebrew casks upgraded: %d\n" "${#sorted_casks[@]}"
+  for name in "${sorted_casks[@]}"; do
+    printf "    - %s\n" "${name}"
+  done
+  printf "  App Store apps upgraded: %d\n" "${#sorted_apps[@]}"
+  for name in "${sorted_apps[@]}"; do
+    printf "    - %s\n" "${name}"
+  done
+}
+
 load_env_if_present() {
   if [[ -f "${ENV_FILE}" ]]; then
     set -a
@@ -197,8 +301,19 @@ cmd_up() {
   require_cmd brew
   mkdir -p "${BACKUP_ROOT}" "${REPORTS_DIR}"
 
+  typeset -A formula_versions_before formula_versions_after
+  typeset -A cask_versions_before cask_versions_after
+  typeset -A mas_versions_before mas_versions_after
+  typeset -A mas_names_before mas_names_after
+
   TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
   DOCTOR_LOG="${REPORTS_DIR}/brew_doctor_${TIMESTAMP}.log"
+
+  step "Collecting pre-upgrade snapshot"
+  snapshot_brew_versions "formula" formula_versions_before
+  snapshot_brew_versions "cask" cask_versions_before
+  snapshot_mas_versions mas_versions_before mas_names_before
+  ok "Pre-upgrade snapshot captured"
 
   step "Updating and upgrading Homebrew"
   brew update
@@ -228,6 +343,17 @@ cmd_up() {
   find "${REPORTS_DIR}" -type f -mtime +${MAX_LOG_DAYS} -delete 2>/dev/null || true
   prune_pattern_keep_latest "${REPORTS_DIR}/brew_doctor_*.log" "${MAX_DOCTOR_LOGS}"
   ok "Retention applied (doctor logs:${MAX_DOCTOR_LOGS}, max age:${MAX_LOG_DAYS}d)"
+
+  step "Collecting post-upgrade snapshot"
+  snapshot_brew_versions "formula" formula_versions_after
+  snapshot_brew_versions "cask" cask_versions_after
+  snapshot_mas_versions mas_versions_after mas_names_after
+  ok "Post-upgrade snapshot captured"
+
+  print_upgrade_summary \
+    formula_versions_before formula_versions_after \
+    cask_versions_before cask_versions_after \
+    mas_versions_before mas_versions_after mas_names_after
 
   step "Done"
   ok "brewthatmac up completed"

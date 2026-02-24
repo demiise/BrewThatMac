@@ -31,6 +31,7 @@ Commands:
   up      Run brew update/upgrade + cleanup + doctor
   dump    Dump installed state to Brewfile + version snapshot
   drift   Audit drift between installed state and Brewfile
+  shell-hook  Manage optional shell prompt hook for auto-dump
   help    Show this help
 
 Examples:
@@ -38,6 +39,7 @@ Examples:
   ${SCRIPT_NAME} up
   ${SCRIPT_NAME} dump
   ${SCRIPT_NAME} drift
+  ${SCRIPT_NAME} shell-hook status
 USAGE
 }
 
@@ -171,6 +173,334 @@ init_defaults() {
   MAX_BREWFILE_VERSIONS="${MACOS_MAX_BREWFILE_VERSIONS:-8}"
 }
 
+is_yes() {
+  case "${1:-}" in
+    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_no() {
+  case "${1:-}" in
+    [Nn]|[Nn][Oo]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+detected_shell_name() {
+  local shell_path="${SHELL:-}"
+  if [[ -n "${shell_path}" ]]; then
+    printf "%s" "${shell_path##*/}"
+  else
+    printf "unknown"
+  fi
+}
+
+shell_profile_path() {
+  local shell_name="$1"
+  case "${shell_name}" in
+    zsh)
+      printf "%s/.zshrc" "${HOME_DIR}"
+      ;;
+    bash)
+      if [[ -f "${HOME_DIR}/.bashrc" ]]; then
+        printf "%s/.bashrc" "${HOME_DIR}"
+      elif [[ "${OSTYPE:-}" == darwin* && -f "${HOME_DIR}/.bash_profile" ]]; then
+        printf "%s/.bash_profile" "${HOME_DIR}"
+      else
+        printf "%s/.bashrc" "${HOME_DIR}"
+      fi
+      ;;
+    fish)
+      printf "%s/.config/fish/config.fish" "${HOME_DIR}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+build_shell_hook_block() {
+  local shell_name="$1"
+  local script_path="${SCRIPT_DIR}/brewthatmac.sh"
+  local escaped_script_path="${script_path//\"/\\\"}"
+
+  case "${shell_name}" in
+    zsh|bash)
+      cat <<EOF
+# >>> brewthatmac shell hook >>>
+_brewthatmac_script="${escaped_script_path}"
+brew() {
+  local subcmd="\${1:-}"
+  local subsubcmd="\${2:-}"
+  local mutating=0
+  local state_before=""
+  local state_after=""
+
+  case "\${subcmd}" in
+    install|reinstall|upgrade|uninstall|remove|rm|tap|untap|pin|unpin|cleanup|autoremove)
+      mutating=1
+      ;;
+    cask)
+      case "\${subsubcmd}" in
+        install|reinstall|upgrade|uninstall)
+          mutating=1
+          ;;
+      esac
+      ;;
+  esac
+
+  if [[ \${mutating} -eq 1 ]]; then
+    state_before="\$(command brew list --formula --versions 2>/dev/null; command brew list --cask --versions 2>/dev/null)"
+  fi
+
+  command brew "\$@"
+  local brew_exit_code=\$?
+
+  if [[ \${brew_exit_code} -eq 0 && \${mutating} -eq 1 && -t 0 && -t 1 ]]; then
+    state_after="\$(command brew list --formula --versions 2>/dev/null; command brew list --cask --versions 2>/dev/null)"
+    if [[ "\${state_before}" != "\${state_after}" ]]; then
+      printf "Brew state changed. Dump updated Brewfile now? [y/N] "
+      local answer
+      read -r answer
+      case "\${answer}" in
+        [Yy]|[Yy][Ee][Ss])
+          local brewthatmac_script="\${_brewthatmac_script:-${escaped_script_path}}"
+          "\${brewthatmac_script}" dump || true
+          ;;
+      esac
+    fi
+  fi
+
+  return \${brew_exit_code}
+}
+# <<< brewthatmac shell hook <<<
+EOF
+      ;;
+    fish)
+      cat <<EOF
+# >>> brewthatmac shell hook >>>
+set -g _brewthatmac_script "${escaped_script_path}"
+function brew --wraps brew --description "brew with BrewThatMac auto-dump prompt"
+  set -l subcmd ""
+  set -l subsubcmd ""
+  if test (count \$argv) -ge 1
+    set subcmd \$argv[1]
+  end
+  if test (count \$argv) -ge 2
+    set subsubcmd \$argv[2]
+  end
+
+  set -l mutating 0
+  switch "\$subcmd"
+    case install reinstall upgrade uninstall remove rm tap untap pin unpin cleanup autoremove
+      set mutating 1
+    case cask
+      switch "\$subsubcmd"
+        case install reinstall upgrade uninstall
+          set mutating 1
+      end
+  end
+
+  set -l state_before ""
+  set -l state_after ""
+  if test \$mutating -eq 1
+    set state_before (command brew list --formula --versions 2>/dev/null; command brew list --cask --versions 2>/dev/null)
+  end
+
+  command brew \$argv
+  set -l brew_exit_code \$status
+
+  if test \$brew_exit_code -eq 0 -a \$mutating -eq 1
+    if status is-interactive
+      set state_after (command brew list --formula --versions 2>/dev/null; command brew list --cask --versions 2>/dev/null)
+      if test "\$state_before" != "\$state_after"
+        read -l -P "Brew state changed. Dump updated Brewfile now? [y/N] " answer
+        switch "\$answer"
+          case y Y yes Yes YES
+            set -l brewthatmac_script "\$_brewthatmac_script"
+            if test -z "\$brewthatmac_script"
+              set brewthatmac_script "${escaped_script_path}"
+            end
+            "\$brewthatmac_script" dump || true
+        end
+      end
+    end
+  end
+
+  return \$brew_exit_code
+end
+# <<< brewthatmac shell hook <<<
+EOF
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+upsert_managed_block() {
+  local target_file="$1"
+  local begin_marker="$2"
+  local end_marker="$3"
+  local block_content="$4"
+  local tmp_file begin_line end_line total_lines
+
+  mkdir -p "$(dirname "${target_file}")"
+  [[ -f "${target_file}" ]] || : > "${target_file}"
+  total_lines="$(wc -l < "${target_file}" | tr -d ' ')"
+
+  begin_line="$(grep -nF "${begin_marker}" "${target_file}" | head -n1 | cut -d: -f1 || true)"
+  if [[ -n "${begin_line}" ]]; then
+    end_line="$(awk -v start="${begin_line}" -v marker="${end_marker}" 'NR > start && $0 == marker { print NR; exit }' "${target_file}")"
+    [[ -n "${end_line}" ]] || end_line="${total_lines}"
+    tmp_file="$(mktemp -t brewthatmac_hook_upsert.XXXXXX)"
+    if (( begin_line > 1 )); then
+      sed -n "1,$((begin_line - 1))p" "${target_file}" > "${tmp_file}"
+    else
+      : > "${tmp_file}"
+    fi
+    [[ -s "${tmp_file}" ]] && printf "\n" >> "${tmp_file}"
+    printf "%s\n" "${block_content}" >> "${tmp_file}"
+    if (( end_line < total_lines )); then
+      printf "\n" >> "${tmp_file}"
+      sed -n "$((end_line + 1)),\$p" "${target_file}" >> "${tmp_file}"
+    fi
+    mv "${tmp_file}" "${target_file}"
+  else
+    tmp_file="$(mktemp -t brewthatmac_hook_append.XXXXXX)"
+    cat "${target_file}" > "${tmp_file}"
+    [[ -s "${tmp_file}" ]] && printf "\n" >> "${tmp_file}"
+    printf "%s\n" "${block_content}" >> "${tmp_file}"
+    mv "${tmp_file}" "${target_file}"
+  fi
+}
+
+remove_managed_block() {
+  local target_file="$1"
+  local begin_marker="$2"
+  local end_marker="$3"
+  local begin_line end_line total_lines tmp_file
+
+  [[ -f "${target_file}" ]] || return 0
+  total_lines="$(wc -l < "${target_file}" | tr -d ' ')"
+  begin_line="$(grep -nF "${begin_marker}" "${target_file}" | head -n1 | cut -d: -f1 || true)"
+  [[ -n "${begin_line}" ]] || return 0
+
+  end_line="$(awk -v start="${begin_line}" -v marker="${end_marker}" 'NR > start && $0 == marker { print NR; exit }' "${target_file}")"
+  [[ -n "${end_line}" ]] || end_line="${total_lines}"
+
+  tmp_file="$(mktemp -t brewthatmac_hook_remove.XXXXXX)"
+  if (( begin_line > 1 )); then
+    sed -n "1,$((begin_line - 1))p" "${target_file}" > "${tmp_file}"
+  else
+    : > "${tmp_file}"
+  fi
+  if (( end_line < total_lines )); then
+    [[ -s "${tmp_file}" ]] && printf "\n" >> "${tmp_file}"
+    sed -n "$((end_line + 1)),\$p" "${target_file}" >> "${tmp_file}"
+  fi
+  mv "${tmp_file}" "${target_file}"
+}
+
+shell_hook_status_one() {
+  local shell_name="$1"
+  local target_file
+  local begin_marker="# >>> brewthatmac shell hook >>>"
+
+  target_file="$(shell_profile_path "${shell_name}" 2>/dev/null || true)"
+  if [[ -z "${target_file}" ]]; then
+    warn "${shell_name}: unsupported shell"
+    return
+  fi
+  if [[ -f "${target_file}" ]] && grep -Fq "${begin_marker}" "${target_file}"; then
+    ok "${shell_name}: installed (${target_file})"
+  else
+    warn "${shell_name}: not installed (${target_file})"
+  fi
+}
+
+install_shell_hook_for_shell() {
+  local shell_name="$1"
+  local target_file block_content
+  local begin_marker="# >>> brewthatmac shell hook >>>"
+  local end_marker="# <<< brewthatmac shell hook <<<"
+
+  target_file="$(shell_profile_path "${shell_name}" 2>/dev/null || true)"
+  if [[ -z "${target_file}" ]]; then
+    warn "Unsupported shell: ${shell_name}"
+    return 1
+  fi
+  block_content="$(build_shell_hook_block "${shell_name}" || true)"
+  if [[ -z "${block_content}" ]]; then
+    warn "Could not build shell hook for ${shell_name}"
+    return 1
+  fi
+  upsert_managed_block "${target_file}" "${begin_marker}" "${end_marker}" "${block_content}"
+  ok "Installed shell hook: ${target_file}"
+}
+
+remove_shell_hook_for_shell() {
+  local shell_name="$1"
+  local target_file
+  local begin_marker="# >>> brewthatmac shell hook >>>"
+  local end_marker="# <<< brewthatmac shell hook <<<"
+
+  target_file="$(shell_profile_path "${shell_name}" 2>/dev/null || true)"
+  if [[ -z "${target_file}" ]]; then
+    warn "Unsupported shell: ${shell_name}"
+    return 1
+  fi
+  remove_managed_block "${target_file}" "${begin_marker}" "${end_marker}"
+  ok "Removed shell hook (if present): ${target_file}"
+}
+
+run_shell_hook_action_for_targets() {
+  local action="$1"
+  local target="${2:-}"
+  local detected shell_name
+  local -a targets
+
+  detected="$(detected_shell_name)"
+  if [[ -z "${target}" ]]; then
+    target="${detected}"
+  fi
+
+  if [[ "${target}" == "all" ]]; then
+    targets=( zsh bash fish )
+  else
+    targets=( "${target}" )
+  fi
+
+  for shell_name in "${targets[@]}"; do
+    case "${action}" in
+      install) install_shell_hook_for_shell "${shell_name}" ;;
+      remove) remove_shell_hook_for_shell "${shell_name}" ;;
+      status) shell_hook_status_one "${shell_name}" ;;
+      *)
+        err "Unknown shell-hook action: ${action}"
+        return 1
+        ;;
+    esac
+  done
+}
+
+cmd_shell_hook() {
+  local action="${1:-status}"
+  local target="${2:-}"
+
+  case "${action}" in
+    install|remove|status)
+      run_shell_hook_action_for_targets "${action}" "${target}"
+      ;;
+    *)
+      err "Unknown shell-hook action: ${action}"
+      warn "Usage: ${SCRIPT_NAME} shell-hook <install|remove|status> [zsh|bash|fish|all]"
+      return 1
+      ;;
+  esac
+}
+
 prune_pattern_keep_latest() {
   local pattern="$1"
   local keep="$2"
@@ -261,6 +591,37 @@ MACOS_MAX_BREWFILE_VERSIONS=${max_brewfile_versions}
 EOF
 
   ok "Wrote config: ${ENV_FILE}"
+
+  printf "\nEnable shell hook for brew auto-dump? [y/N] "
+  read -r input
+  if is_yes "${input}"; then
+    local detected target_file answer shell_name
+    local -a shell_candidates
+
+    printf "When brew installs/upgrades/removes packages and the installed state changed, you'll be prompted to run 'brewthatmac dump'.\n"
+    detected="$(detected_shell_name)"
+    shell_candidates=( zsh bash fish )
+
+    if target_file="$(shell_profile_path "${detected}" 2>/dev/null)"; then
+      printf "Install hook in %s? [Y/n] " "${target_file}"
+      read -r answer
+      if [[ -z "${answer}" ]] || ! is_no "${answer}"; then
+        install_shell_hook_for_shell "${detected}" || true
+      fi
+    fi
+
+    for shell_name in "${shell_candidates[@]}"; do
+      [[ "${shell_name}" == "${detected}" ]] && continue
+      target_file="$(shell_profile_path "${shell_name}" 2>/dev/null || true)"
+      [[ -n "${target_file}" ]] || continue
+      [[ -f "${target_file}" ]] || continue
+      printf "Install hook in %s? [y/N] " "${target_file}"
+      read -r answer
+      if is_yes "${answer}"; then
+        install_shell_hook_for_shell "${shell_name}" || true
+      fi
+    done
+  fi
 }
 
 try_mas_upgrade_with_login_prompt() {
@@ -634,7 +995,7 @@ if [[ $# -gt 0 ]]; then
   shift
 fi
 
-if [[ "${cmd}" != "config" && "${cmd}" != "help" && "${cmd}" != "-h" && "${cmd}" != "--help" ]]; then
+if [[ "${cmd}" != "config" && "${cmd}" != "shell-hook" && "${cmd}" != "help" && "${cmd}" != "-h" && "${cmd}" != "--help" ]]; then
   ensure_env_for_runtime
 fi
 
@@ -653,6 +1014,9 @@ case "${cmd}" in
     ;;
   drift)
     cmd_drift
+    ;;
+  shell-hook)
+    cmd_shell_hook "$@"
     ;;
   help|-h|--help)
     usage

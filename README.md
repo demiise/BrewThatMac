@@ -16,6 +16,7 @@ Commands:
 - `up`: `brew update/upgrade` + `mas upgrade` + cleanup + doctor + end-of-run upgrade summary
 - `dump`: dump installed state to Brewfile + version snapshots
 - `drift`: compare installed state vs Brewfile and apply fixes
+- `shell-hook`: install/remove/status for optional brew auto-dump shell hook (`zsh`, `bash`, `fish`)
 - `help`: show usage
 
 ## Setup
@@ -41,6 +42,9 @@ Alternative:
 ```
 
 This interactive setup writes `.env`.
+It also offers an optional shell-hook install:
+- prompt text: `Enable shell hook for brew auto-dump? [y/N]`
+- behavior: after successful mutating `brew` commands, prompt to run `brewthatmac dump` only when installed formula/cask state changed.
 
 First-run behavior:
 - Running `brewthatmac up|dump|drift` without `.env` will automatically launch interactive config.
@@ -65,3 +69,7 @@ alias brewdrift='brewthatmac drift'
 
 - `.env` is not committed.
 - `Brewfile` location is configurable via `MACOS_BREWFILE_PATH`.
+- Manual shell-hook management:
+  - `./brewthatmac.sh shell-hook status all`
+  - `./brewthatmac.sh shell-hook install zsh`
+  - `./brewthatmac.sh shell-hook remove fish`

@@ -30,6 +30,7 @@ Commands:
   config  Interactive setup for .env
   up      Run brew update/upgrade + cleanup + doctor
   dump    Dump installed state to Brewfile + version snapshot
+  edit    Open Brewfile in your preferred editor
   drift   Audit drift between installed state and Brewfile
   shell-hook  Manage optional shell prompt hook for auto-dump
   help    Show this help
@@ -38,6 +39,7 @@ Examples:
   ${SCRIPT_NAME} config
   ${SCRIPT_NAME} up
   ${SCRIPT_NAME} dump
+  ${SCRIPT_NAME} edit
   ${SCRIPT_NAME} drift
   ${SCRIPT_NAME} shell-hook status
 USAGE
@@ -171,6 +173,180 @@ init_defaults() {
   MAX_DOCTOR_LOGS="${MACOS_MAX_DOCTOR_LOGS:-20}"
   MAX_LOG_DAYS="${MACOS_MAX_LOG_DAYS:-60}"
   MAX_BREWFILE_VERSIONS="${MACOS_MAX_BREWFILE_VERSIONS:-8}"
+  BREWFILE_EDITOR="${MACOS_BREWFILE_EDITOR:-}"
+}
+
+escape_env_double_quoted_value() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf "%s" "${value}"
+}
+
+upsert_env_setting() {
+  local key="$1"
+  local value="$2"
+  local escaped_value tmp_file
+
+  escaped_value="$(escape_env_double_quoted_value "${value}")"
+  mkdir -p "$(dirname "${ENV_FILE}")"
+  [[ -f "${ENV_FILE}" ]] || : > "${ENV_FILE}"
+  tmp_file="$(mktemp -t brewthatmac_env.XXXXXX)"
+
+  awk -v key="${key}" -v value="${escaped_value}" '
+    BEGIN { wrote = 0 }
+    $0 ~ ("^" key "=") {
+      if (!wrote) {
+        printf "%s=\"%s\"\n", key, value
+        wrote = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!wrote) {
+        printf "%s=\"%s\"\n", key, value
+      }
+    }
+  ' "${ENV_FILE}" > "${tmp_file}"
+
+  mv "${tmp_file}" "${ENV_FILE}"
+}
+
+typeset -ga EDITOR_CANDIDATE_LABELS
+typeset -ga EDITOR_CANDIDATE_CMDS
+CHOSEN_EDITOR_CMD=""
+
+add_editor_candidate() {
+  local label="$1"
+  local command_str="$2"
+  local existing
+
+  for existing in "${EDITOR_CANDIDATE_CMDS[@]:-}"; do
+    [[ "${existing}" == "${command_str}" ]] && return
+  done
+
+  EDITOR_CANDIDATE_LABELS+=( "${label}" )
+  EDITOR_CANDIDATE_CMDS+=( "${command_str}" )
+}
+
+collect_editor_candidates() {
+  EDITOR_CANDIDATE_LABELS=()
+  EDITOR_CANDIDATE_CMDS=()
+
+  command -v cursor >/dev/null 2>&1 && add_editor_candidate "Cursor" "cursor --wait"
+  command -v code >/dev/null 2>&1 && add_editor_candidate "VS Code" "code --wait"
+  command -v micro >/dev/null 2>&1 && add_editor_candidate "micro" "micro"
+  command -v nano >/dev/null 2>&1 && add_editor_candidate "nano" "nano"
+  command -v vim >/dev/null 2>&1 && add_editor_candidate "vim" "vim"
+  command -v nvim >/dev/null 2>&1 && add_editor_candidate "neovim" "nvim"
+  command -v vi >/dev/null 2>&1 && add_editor_candidate "vi" "vi"
+  command -v kate >/dev/null 2>&1 && add_editor_candidate "Kate" "kate --block"
+  command -v gedit >/dev/null 2>&1 && add_editor_candidate "gedit" "gedit --wait"
+  command -v xed >/dev/null 2>&1 && add_editor_candidate "xed" "xed"
+  command -v mousepad >/dev/null 2>&1 && add_editor_candidate "mousepad" "mousepad"
+  command -v pluma >/dev/null 2>&1 && add_editor_candidate "pluma" "pluma"
+  if [[ "${OSTYPE:-}" == darwin* ]] && command -v open >/dev/null 2>&1; then
+    add_editor_candidate "TextEdit" "open -W -a TextEdit"
+  fi
+  command -v notepad.exe >/dev/null 2>&1 && add_editor_candidate "Notepad" "notepad.exe"
+  command -v notepad >/dev/null 2>&1 && add_editor_candidate "Notepad" "notepad"
+}
+
+resolve_editor_command() {
+  local override="${1:-}"
+  if [[ -n "${override}" ]]; then
+    printf "%s" "${override}"
+  elif [[ -n "${BREWFILE_EDITOR:-}" ]]; then
+    printf "%s" "${BREWFILE_EDITOR}"
+  elif [[ -n "${VISUAL:-}" ]]; then
+    printf "%s" "${VISUAL}"
+  elif [[ -n "${EDITOR:-}" ]]; then
+    printf "%s" "${EDITOR}"
+  else
+    printf ""
+  fi
+}
+
+fallback_editor_command() {
+  if command -v nano >/dev/null 2>&1; then
+    printf "nano"
+  elif command -v micro >/dev/null 2>&1; then
+    printf "micro"
+  elif command -v vim >/dev/null 2>&1; then
+    printf "vim"
+  elif command -v nvim >/dev/null 2>&1; then
+    printf "nvim"
+  elif command -v vi >/dev/null 2>&1; then
+    printf "vi"
+  elif command -v kate >/dev/null 2>&1; then
+    printf "kate --block"
+  elif command -v gedit >/dev/null 2>&1; then
+    printf "gedit --wait"
+  elif command -v xed >/dev/null 2>&1; then
+    printf "xed"
+  elif command -v mousepad >/dev/null 2>&1; then
+    printf "mousepad"
+  elif command -v pluma >/dev/null 2>&1; then
+    printf "pluma"
+  elif command -v cursor >/dev/null 2>&1; then
+    printf "cursor --wait"
+  elif command -v code >/dev/null 2>&1; then
+    printf "code --wait"
+  elif [[ "${OSTYPE:-}" == darwin* ]] && command -v open >/dev/null 2>&1; then
+    printf "open -W -a TextEdit"
+  elif command -v notepad.exe >/dev/null 2>&1; then
+    printf "notepad.exe"
+  elif command -v notepad >/dev/null 2>&1; then
+    printf "notepad"
+  else
+    printf ""
+  fi
+}
+
+choose_editor_interactively() {
+  local option_count index selected_idx answer
+  CHOSEN_EDITOR_CMD=""
+
+  [[ -t 0 && -t 1 ]] || return 1
+  collect_editor_candidates
+  option_count=${#EDITOR_CANDIDATE_CMDS[@]}
+  (( option_count > 0 )) || return 1
+
+  step "Choose Brewfile editor"
+  for (( index = 1; index <= option_count; index++ )); do
+    printf "  %d) %s (%s)\n" \
+      "${index}" "${EDITOR_CANDIDATE_LABELS[${index}]}" "${EDITOR_CANDIDATE_CMDS[${index}]}"
+  done
+  printf "Choose editor [1]: "
+  read -r selected_idx
+  if [[ -z "${selected_idx}" ]]; then
+    selected_idx=1
+  fi
+  if [[ "${selected_idx}" != <-> ]] || (( selected_idx < 1 || selected_idx > option_count )); then
+    warn "Invalid editor selection; skipping interactive picker"
+    return 1
+  fi
+
+  CHOSEN_EDITOR_CMD="${EDITOR_CANDIDATE_CMDS[${selected_idx}]}"
+
+  printf "Save as default in %s? [Y/n] " "${ENV_FILE}"
+  read -r answer
+  if [[ -z "${answer}" ]] || ! is_no "${answer}"; then
+    upsert_env_setting "MACOS_BREWFILE_EDITOR" "${CHOSEN_EDITOR_CMD}"
+    BREWFILE_EDITOR="${CHOSEN_EDITOR_CMD}"
+    ok "Saved default editor in ${ENV_FILE}"
+  fi
+}
+
+run_editor_command() {
+  local editor_cmd="$1"
+  local file_path="$2"
+  local -a editor_parts
+
+  editor_parts=( ${(z)editor_cmd} )
+  (( ${#editor_parts[@]} > 0 )) || return 1
+  "${editor_parts[@]}" "${file_path}"
 }
 
 is_yes() {
@@ -546,6 +722,7 @@ cmd_config() {
   default_max_doctor_logs="${MAX_DOCTOR_LOGS}"
   default_max_log_days="${MAX_LOG_DAYS}"
   default_max_brewfile_versions="${MAX_BREWFILE_VERSIONS}"
+  default_brewfile_editor="${BREWFILE_EDITOR}"
 
   printf "BrewThatMac configuration\n"
   printf "Press Enter to accept each default.\n\n"
@@ -578,6 +755,10 @@ cmd_config() {
   read -r input
   max_brewfile_versions="${input:-$default_max_brewfile_versions}"
 
+  printf "Default Brewfile editor command [%s]: " "${default_brewfile_editor}"
+  read -r input
+  brewfile_editor="${input:-$default_brewfile_editor}"
+
   mkdir -p "$(dirname "${ENV_FILE}")"
   cat > "${ENV_FILE}" <<EOF
 MACOS_BACKUP_ROOT="${backup_root}"
@@ -589,6 +770,10 @@ MACOS_MAX_DOCTOR_LOGS=${max_doctor_logs}
 MACOS_MAX_LOG_DAYS=${max_log_days}
 MACOS_MAX_BREWFILE_VERSIONS=${max_brewfile_versions}
 EOF
+  if [[ -n "${brewfile_editor}" ]]; then
+    escaped_brewfile_editor="$(escape_env_double_quoted_value "${brewfile_editor}")"
+    printf 'MACOS_BREWFILE_EDITOR="%s"\n' "${escaped_brewfile_editor}" >> "${ENV_FILE}"
+  fi
 
   ok "Wrote config: ${ENV_FILE}"
 
@@ -748,6 +933,66 @@ cmd_dump() {
 
   prune_pattern_keep_latest "${BREWFILE_VERSIONS_DIR}/Brewfile_*" "${MAX_BREWFILE_VERSIONS}"
   ok "Retention applied (Brewfile versions:${MAX_BREWFILE_VERSIONS})"
+}
+
+cmd_edit() {
+  local editor_override=""
+  local print_path=0
+  local editor_cmd=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --editor)
+        shift
+        if (( $# == 0 )); then
+          err "--editor requires a value"
+          return 1
+        fi
+        editor_override="$1"
+        ;;
+      --editor=*)
+        editor_override="${1#--editor=}"
+        ;;
+      --print-path)
+        print_path=1
+        ;;
+      *)
+        err "Unknown edit option: $1"
+        warn "Usage: ${SCRIPT_NAME} edit [--editor \"<command>\"] [--print-path]"
+        return 1
+        ;;
+    esac
+    shift
+  done
+
+  mkdir -p "$(dirname "${BREWFILE_PATH}")"
+  [[ -f "${BREWFILE_PATH}" ]] || : > "${BREWFILE_PATH}"
+
+  if (( print_path == 1 )); then
+    printf "%s\n" "${BREWFILE_PATH}"
+    return 0
+  fi
+
+  editor_cmd="$(resolve_editor_command "${editor_override}")"
+  if [[ -z "${editor_cmd}" ]]; then
+    choose_editor_interactively || true
+    editor_cmd="${CHOSEN_EDITOR_CMD:-}"
+  fi
+  if [[ -z "${editor_cmd}" ]]; then
+    editor_cmd="$(fallback_editor_command)"
+  fi
+
+  if [[ -z "${editor_cmd}" ]]; then
+    err "No editor found. Set MACOS_BREWFILE_EDITOR, VISUAL, or EDITOR."
+    return 1
+  fi
+
+  step "Opening Brewfile"
+  if ! run_editor_command "${editor_cmd}" "${BREWFILE_PATH}"; then
+    err "Failed to launch editor command: ${editor_cmd}"
+    return 1
+  fi
+  ok "Brewfile edit complete: ${BREWFILE_PATH}"
 }
 
 refresh_drift_quiet() {
@@ -995,7 +1240,7 @@ if [[ $# -gt 0 ]]; then
   shift
 fi
 
-if [[ "${cmd}" != "config" && "${cmd}" != "shell-hook" && "${cmd}" != "help" && "${cmd}" != "-h" && "${cmd}" != "--help" ]]; then
+if [[ "${cmd}" != "config" && "${cmd}" != "edit" && "${cmd}" != "shell-hook" && "${cmd}" != "help" && "${cmd}" != "-h" && "${cmd}" != "--help" ]]; then
   ensure_env_for_runtime
 fi
 
@@ -1011,6 +1256,9 @@ case "${cmd}" in
     ;;
   dump)
     cmd_dump
+    ;;
+  edit)
+    cmd_edit "$@"
     ;;
   drift)
     cmd_drift

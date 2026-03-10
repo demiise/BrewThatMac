@@ -15,6 +15,7 @@ Commands:
 - `config`: interactive setup for `.env`
 - `up`: `brew update/upgrade` + `mas upgrade` + cleanup + doctor + end-of-run upgrade summary
 - `dump`: dump installed state to Brewfile + version snapshots
+- `edit`: open Brewfile in your preferred editor (`--editor` override supported)
 - `drift`: compare installed state vs Brewfile and apply fixes
 - `shell-hook`: install/remove/status for optional brew auto-dump shell hook (`zsh`, `bash`, `fish`)
 - `help`: show usage
@@ -33,6 +34,7 @@ cp ./.env.example ./.env
 - `MACOS_BREWFILE_PATH`
 - `MACOS_REPORTS_DIR`
 - `MACOS_BREWFILE_VERSIONS_DIR`
+- `MACOS_BREWFILE_EDITOR` (optional default editor command, e.g. `code --wait`)
 - retention values
 
 Alternative:
@@ -48,13 +50,15 @@ It also offers an optional shell-hook install:
 
 First-run behavior:
 - Running `brewthatmac up|dump|drift` without `.env` will automatically launch interactive config.
+- Running `brewthatmac edit` can prompt you to choose and save a default editor if none is configured.
 
 ## Recommended Workflow
 
 1. Run `brewthatmac up` for package maintenance.
 2. Use `brew install ...` when needed.
-3. Run `brewthatmac dump` (or accept prompt if configured) to update Brewfile.
-4. Run `brewthatmac drift` when you want to reconcile differences.
+3. Run `brewthatmac edit` for manual Brewfile changes when needed.
+4. Run `brewthatmac dump` (or accept prompt if configured) to update Brewfile from installed state.
+5. Run `brewthatmac drift` when you want to reconcile differences.
 
 ## Optional Aliases
 
@@ -73,3 +77,8 @@ alias brewdrift='brewthatmac drift'
   - `./brewthatmac.sh shell-hook status all`
   - `./brewthatmac.sh shell-hook install zsh`
   - `./brewthatmac.sh shell-hook remove fish`
+- Brewfile editor command precedence:
+  - `./brewthatmac.sh edit --editor "<command>"`
+  - `MACOS_BREWFILE_EDITOR` in `.env`
+  - `VISUAL`, then `EDITOR`
+  - auto fallback (`nano`, `micro`, `vim`, `vi`, `kate --block`, `gedit --wait`, `code --wait`, `TextEdit`, etc.)
